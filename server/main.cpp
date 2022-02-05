@@ -5,7 +5,7 @@
 #include "mbedtls/net_sockets.h"
 #include "mbedtls/error.h"
 #include "mbedtls/debug.h"
-#include "server.h"
+#include "tls.h"
 
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -13,7 +13,8 @@
 #include <unistd.h>
 #include <cstring>
 #include "sys/socket.h"
-#include "tls_keys.h"
+#include "storage/tls_keys.h"
+#include "test/client.h"
 
 #define DEBUG_LEVEL 0
 
@@ -74,8 +75,13 @@ int main() {
     }
 
     printf("\n!!!%.*s!!!\n", (int)olen, result);
-    server s;
-    s.init();
+    client c;
+    c.init();
+    return 0;
+    Tls s;
+    s.set_own_cert(tls_keys::get_server_cert(), tls_keys::get_server_key());
+    s.set_ca_cert(tls_keys::get_ca_cert());
+    s.init(true, true);
     std::cout << "Hello, World!" << std::endl;
     struct addrinfo hints = {};
     struct addrinfo *addr_list, *cur;

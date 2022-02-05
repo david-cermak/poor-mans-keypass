@@ -2,21 +2,25 @@
 // Created by david on 09.01.22.
 //
 
-#ifndef SERVER_SERVER_H
-#define SERVER_SERVER_H
+#ifndef SERVER_TLS_H
+#define SERVER_TLS_H
 
 #include "mbedtls/ssl.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/error.h"
+#include "common_types.h"
 
-
-class server {
+class Tls {
 public:
-    bool init();
+    Tls();
+    bool init(bool is_server, bool verify);
     int handshake(int s);
     int write(const unsigned char *buf, size_t len);
     int read(unsigned char *buf, size_t len);
+    bool set_own_cert(const_buf crt, const_buf key);
+    bool set_ca_cert(const_buf crt);
+
 private:
     mbedtls_ssl_context ssl_{};
     mbedtls_x509_crt public_cert_{};
@@ -33,4 +37,4 @@ private:
 };
 
 
-#endif //SERVER_SERVER_H
+#endif //SERVER_TLS_H

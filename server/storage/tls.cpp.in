@@ -1,9 +1,11 @@
-#include "tls_keys.h"
+#include "storage/tls_keys.h"
 
 static const unsigned char ca_crt[] = "@CA_CRT@";
 static const unsigned char server_crt[] = "@SERVER_CRT@";
 static const unsigned char server_key[] = "@SERVER_KEY@";
 static const unsigned char master_key[] = "@MASTER_KEY@";
+static const unsigned char client_crt[] = "@CLIENT_CRT@";
+static const unsigned char client_key[] = "@CLIENT_KEY@";
 
 namespace tls_keys {
 
@@ -22,7 +24,18 @@ const_buf get_server_key()
     return std::make_pair(server_key, sizeof(server_key));
 }
 
-const_buf get_master_key()
+const_buf get_client_cert()
+{
+    return std::make_pair(client_crt, sizeof(client_crt));
+}
+
+const_buf get_client_key()
+{
+    return std::make_pair(client_key, sizeof(client_key));
+}
+
+
+    const_buf get_master_key()
 {
     return std::make_pair(master_key, sizeof(master_key));
 }
