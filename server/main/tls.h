@@ -20,6 +20,10 @@ public:
     int read(unsigned char *buf, size_t len);
     bool set_own_cert(const_buf crt, const_buf key);
     bool set_ca_cert(const_buf crt);
+    bool set_mater_key(const_buf key);
+    virtual int send(const unsigned char *buf, size_t len);
+    virtual int recv(unsigned char *buf, size_t len);
+    size_t decrypt(buf &in_buf, buf &out_buf);
 
 private:
     mbedtls_ssl_context ssl_{};
@@ -29,11 +33,15 @@ private:
     mbedtls_ssl_config conf_{};
     mbedtls_ctr_drbg_context ctr_drbg_{};
     mbedtls_entropy_context entropy_{};
+    mbedtls_pk_context master_key_{};
     int sock_{-1};
 
     static void print_error(const char* function, int error_code);
     static int bio_write(void *ctx, const unsigned char *buf, size_t len);
     static int bio_read(void *ctx, unsigned char *buf, size_t len);
+    int mbedtls_pk_parse_key( mbedtls_pk_context *ctx,
+                              const unsigned char *key, size_t keylen,
+                              const unsigned char *pwd, size_t pwdlen);
 };
 
 

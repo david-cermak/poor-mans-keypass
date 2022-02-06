@@ -60,13 +60,13 @@ int Tls::handshake(int s)
 int Tls::bio_write(void *ctx, const unsigned char *buf, size_t len)
 {
     auto s = static_cast<Tls*>(ctx);
-    return send(s->sock_, buf, len, 0);
+    return s->send(buf, len);
 }
 
 int Tls::bio_read(void *ctx, unsigned char *buf, size_t len)
 {
     auto s = static_cast<Tls*>(ctx);
-    return recv(s->sock_, buf, len, 0);
+    return s->recv(buf, len);
 }
 
 int Tls::write(const unsigned char *buf, size_t len)
@@ -86,7 +86,7 @@ bool Tls::set_own_cert(const_buf crt, const_buf key)
         print_error("mbedtls_x509_crt_parse", ret);
         return false;
     }
-    ret = mbedtls_pk_parse_key(&pk_key_, key.first, key.second, nullptr, 0, mbedtls_ctr_drbg_random, &ctr_drbg_ );
+    ret = mbedtls_pk_parse_key(&pk_key_, key.first, key.second, nullptr, 0);
     if (ret < 0) {
         print_error("mbedtls_pk_parse_keyfile", ret);
         return false;
@@ -108,6 +108,50 @@ Tls::Tls()
 {
     mbedtls_x509_crt_init(&public_cert_);
     mbedtls_pk_init(&pk_key_);
+    mbedtls_pk_init(&master_key_);
     mbedtls_x509_crt_init(&ca_cert_);
+}
+
+int Tls::recv(unsigned char *buf, size_t len)
+{
+    return ::send(sock_, buf, len, 0);
+}
+
+int Tls::send(const unsigned char *buf, size_t len)
+{
+    return ::send(sock_, buf, len, 0);
+}
+
+int
+Tls::mbedtls_pk_parse_key(mbedtls_pk_context *ctx, const unsigned char *key, size_t keylen, const unsigned char *pwd,
+                          size_t pwdlen) {
+
+    return ::mbedtls_pk_parse_key(ctx, key, keylen, pwd, pwdlen
+#ifndef ESP_PLATFORM
+                                  , nullptr, nullptr
+#endif
+    );
+}
+
+bool Tls::set_mater_key(const_buf key)
+{
+    int ret = mbedtls_pk_parse_key(&master_key_, key.first, key.second, nullptr, 0);
+    if (ret < 0) {
+        print_error("mbedtls_pk_parse_keyfile", ret);
+        return false;
+    }
+    return true;
+}
+
+size_t Tls::decrypt(buf &in_buf, buf &out_buf)
+{
+    size_t out_size = 0;
+    int ret = ::mbedtls_pk_decrypt( &master_key_, in_buf.first, in_buf.second,
+                                  out_buf.first, &out_size, out_buf.second,
+                                  mbedtls_ctr_drbg_random, &ctr_drbg_);
+    if (ret < 0) {
+        return -1;
+    }
+    return out_size;
 }
 

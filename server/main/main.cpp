@@ -31,65 +31,64 @@ static void my_debug( void *ctx, int level,
     fflush(  (FILE *) ctx  );
 }
 
+class Uart_Tls : public Tls {
+public:
+    int send(const unsigned char *buf, size_t len) override
+    {
+        for (int i=0; i<len; ++i) {
+            int c = fputc(buf[i], stdout);
+            if (c == -1) {
+                fflush(stdout);
+                return i;
+            }
+        }
+        fflush(stdout);
+        return len;
+    }
+
+    int recv(unsigned char *buf, size_t len) override
+    {
+        for (int i=0; i<len; ++i) {
+            int c = fgetc(stdin);
+            if (c == -1) {
+                return i;
+            }
+            buf[i] = c;
+        }
+        return len;
+    }
+
+};
+
 int main() {
-    int ret = 0;
-    const char pers[] = "rsa_decrypt";
-    mbedtls_pk_context pk;
-    mbedtls_entropy_context entropy;
-    mbedtls_ctr_drbg_context ctr_drbg;
-    mbedtls_ctr_drbg_init( &ctr_drbg );
-    mbedtls_entropy_init( &entropy );
-    ret = mbedtls_ctr_drbg_seed( &ctr_drbg, mbedtls_entropy_func,
-                                 &entropy, (const unsigned char *) pers,
-                                 sizeof ( pers ) );
-#if defined(MBEDTLS_DEBUG_C)
-    mbedtls_debug_set_threshold( DEBUG_LEVEL );
-#endif
-    if( ret != 0 )
-    {
-        printf( " failed\n  ! mbedtls_ctr_drbg_seed returned %d\n",
-                        ret );
-        return 1;
-    }
-    mbedtls_pk_init( &pk );
-    auto master_key = tls_keys::get_master_key();
-    ret = mbedtls_pk_parse_key( &pk, master_key.first, master_key.second, NULL, 0, NULL, NULL );
-    if( ret != 0 )
-    {
-        printf( " failed\n  ! mbedtls_pk_parse_keyfile returned -0x%04x\n", -ret );
-        return 1;
-    }
     unsigned char result[MBEDTLS_MPI_MAX_SIZE];
-    size_t olen = 0;
 
-/*
- * Calculate the RSA encryption of the data.
- */
-    printf( "\n  . Generating the encrypted value" );
-    fflush( stdout );
-    ret = mbedtls_pk_decrypt( &pk, to_decrypt, sizeof (to_decrypt), result, &olen, sizeof(result), mbedtls_ctr_drbg_random, &ctr_drbg );
-    if (ret != 0 )
-    {
-        printf( " failed\n  ! mbedtls_pk_decrypt returned -0x%04x\n", -ret );
-        return 1;
-    }
-
-    printf("\n!!!%.*s!!!\n", (int)olen, result);
-    client c;
-    c.init();
-    return 0;
-    Tls s;
+//    client c;
+//    c.init();
+//    return 0;
+    Uart_Tls s;
+    s.set_mater_key(tls_keys::get_master_key());
     s.set_own_cert(tls_keys::get_server_cert(), tls_keys::get_server_key());
     s.set_ca_cert(tls_keys::get_ca_cert());
     s.init(true, true);
-    std::cout << "Hello, World!" << std::endl;
+    auto output = std::make_pair(result, sizeof(result));
+    auto input = std::make_pair((unsigned char*)to_decrypt, sizeof(to_decrypt));
+    size_t olen = s.decrypt(input, output);
+    printf("\n!!!%.*s!!!\n", (int)olen, result);
+    if (s.handshake(0) == -1) {
+        printf( "FAILED!" );
+        return 1;
+    }
+    printf( "OKAY\n" );
+    return 0;
+
     struct addrinfo hints = {};
     struct addrinfo *addr_list, *cur;
     struct sockaddr_in *serv_addr = nullptr;
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
-    if ( getaddrinfo("localhost", "3344", &hints, &addr_list ) != 0 ) {
+    if ( getaddrinfo("0.0.0.0", "3344", &hints, &addr_list ) != 0 ) {
         return 1;
     }
     int fd = -1;
@@ -128,7 +127,7 @@ int main() {
     printf( "OKAY\n" );
     uint8_t buf[100];
     while (true) {
-        ret = s.read( buf, sizeof(buf) );
+        int ret = s.read( buf, sizeof(buf) );
         if (ret > 5) {
             printf( "%*s\n", ret, buf );
             if (strncmp((char*)buf, "end", 3) == 0) {
@@ -139,3 +138,28 @@ int main() {
     }
     return 0;
 }
+
+#if ESP_PLATFORM
+#include "nvs_flash.h"
+#include "esp_netif.h"
+#include "protocol_examples_common.h"
+#include "esp_event.h"
+
+extern "C" void app_main()
+{
+    printf("Starting fgetc\n");
+    int c;
+    while ((c = fgetc(stdin)) == -1) {
+        vTaskDelay(1);
+    }
+
+    printf("%x\n", c);
+
+//    ESP_ERROR_CHECK(nvs_flash_init());
+//    ESP_ERROR_CHECK(esp_netif_init());
+//    ESP_ERROR_CHECK(esp_event_loop_create_default());
+//
+//    ESP_ERROR_CHECK(example_connect());
+    main();
+}
+#endif

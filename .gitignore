@@ -33,6 +33,8 @@
 
 build
 build2
+sdkconfig
+sdkconfig.old
 .idea/
 cmake-build-*/
 keys/
