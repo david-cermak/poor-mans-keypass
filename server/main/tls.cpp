@@ -114,12 +114,22 @@ Tls::Tls()
 
 int Tls::recv(unsigned char *buf, size_t len)
 {
-    return ::send(sock_, buf, len, 0);
+    printf("Try to read %d\n", len);
+    int l = ::recv(sock_, buf, len, 0);
+    for (int i=0; i<l; ++i)
+        printf("0x%0x, ", buf[i]);
+    printf("\nReading %d\n",l);
+    return l;
+
 }
 
 int Tls::send(const unsigned char *buf, size_t len)
 {
-    return ::send(sock_, buf, len, 0);
+    for (int i=0; i<len; ++i)
+        printf("0x%0x, ", buf[i]);
+    int l = ::send(sock_, buf, len, 0);
+    printf("\nWriting %d\n", l);
+    return l;
 }
 
 int

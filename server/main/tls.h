@@ -34,7 +34,6 @@ private:
     mbedtls_ctr_drbg_context ctr_drbg_{};
     mbedtls_entropy_context entropy_{};
     mbedtls_pk_context master_key_{};
-    int sock_{-1};
 
     static void print_error(const char* function, int error_code);
     static int bio_write(void *ctx, const unsigned char *buf, size_t len);
@@ -42,6 +41,9 @@ private:
     int mbedtls_pk_parse_key( mbedtls_pk_context *ctx,
                               const unsigned char *key, size_t keylen,
                               const unsigned char *pwd, size_t pwdlen);
+
+protected:
+    int sock_{-1};
 };
 
 
