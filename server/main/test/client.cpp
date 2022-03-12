@@ -34,7 +34,7 @@ static const unsigned char to_decrypt[] = {126, 200, 113, 150, 184, 40, 214, 157
 
 bool client::init() {
     int fd;
-    fd = open ("/dev/ttyUSB1", O_RDWR | O_NOCTTY | O_SYNC);
+    fd = open ("/dev/ttyUSB0", O_RDWR | O_NOCTTY | O_SYNC);
     if (fd < 0)
     {
         printf ("error %d opening %s: %s", errno, "/dev/ttyUSB1", strerror (errno));

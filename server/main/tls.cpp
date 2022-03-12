@@ -137,9 +137,9 @@ Tls::mbedtls_pk_parse_key(mbedtls_pk_context *ctx, const unsigned char *key, siz
                           size_t pwdlen) {
 
     return ::mbedtls_pk_parse_key(ctx, key, keylen, pwd, pwdlen
-#ifndef ESP_PLATFORM
+//#ifndef ESP_PLATFORM
                                   , nullptr, nullptr
-#endif
+//#endif
     );
 }
 
