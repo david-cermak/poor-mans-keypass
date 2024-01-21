@@ -21,7 +21,28 @@
 #include "driver/i2c.h"
 #include <sys/socket.h>
 
-RTC_DATA_ATTR static int temp = 0;
+RTC_DATA_ATTR static uint16_t temp[10] = { 0 };
+RTC_DATA_ATTR static int status = 0;
+#define GPIO_OUT 33
+#define LED_OUT 32
+RTC_DATA_ATTR static int boot_count = 0;
+
+typedef struct interval {
+    uint16_t from;
+    uint16_t to;
+} interval_t;
+
+#define SOLAR 0
+#define OVERRIDE 1
+#define EVENING  2
+#define NIGHT    3
+
+RTC_DATA_ATTR static uint16_t temp_low = 28;
+RTC_DATA_ATTR static uint16_t temps[] = { 20, 30, 35, 40 };
+RTC_DATA_ATTR static interval_t intervals[] =  {  { 700, 1800 },
+                                                  { 1530, 1600},
+                                                  { 2100, 2230},
+                                                  { 400, 500} };
 
 static const char *TAG = "example";
 static EventGroupHandle_t s_wifi_event_group;
@@ -32,6 +53,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGI(TAG,"connect to the AP fail");
+        esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
@@ -71,11 +93,58 @@ static esp_err_t i2c_master_init(void)
 
 #define PORT 3333
 
+static const esp_vfs_spiffs_conf_t spiffs_conf = {
+        .base_path = "/spiffs",
+        .partition_label = NULL,
+        .max_files = 5,
+        .format_if_mount_failed = true
+};
+
+
+static void init_spiffs()
+{
+    ESP_LOGI(TAG, "Initializing SPIFFS");
+
+    esp_err_t ret = esp_vfs_spiffs_register(&spiffs_conf);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount or format filesystem");
+        } else if (ret == ESP_ERR_NOT_FOUND) {
+            ESP_LOGE(TAG, "Failed to find SPIFFS partition");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
+        }
+        return;
+    }
+    size_t total = 0, used = 0;
+    ret = esp_spiffs_info(spiffs_conf.partition_label, &total, &used);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s). Formatting...", esp_err_to_name(ret));
+        esp_spiffs_format(spiffs_conf.partition_label);
+        return;
+    } else {
+        ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
+    }
+
+    if (used > total) {
+        ESP_LOGW(TAG, "Number of used bytes cannot be larger than total. Performing SPIFFS_check().");
+        ret = esp_spiffs_check(spiffs_conf.partition_label);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "SPIFFS_check() failed (%s)", esp_err_to_name(ret));
+            return;
+        } else {
+            ESP_LOGI(TAG, "SPIFFS_check() successful");
+        }
+    }
+}
+
+
 
 void try_to_connect()
 {
     uint32_t data;
-    char host_ip[] = "192.168.0.28";
+    char host_ip[] = "192.168.4.2";
 
     struct sockaddr_in dest_addr;
     inet_pton(AF_INET, host_ip, &dest_addr.sin_addr);
@@ -99,13 +168,57 @@ void try_to_connect()
     if (len == 4) {
         ESP_LOGI(TAG, "DATA: %d %x", (int)data, (int)data);
         if (data == 0x1111) {
+            init_spiffs();
             unlink("/spiffs/foo.txt");
-            FILE* f = fopen("/spiffs/foo.txt", "a");
-            fputc(0x11, f);
-            fputc(0x22, f);
+            FILE *f = fopen("/spiffs/foo.txt", "a");
             fclose(f);
-
+            esp_vfs_spiffs_unregister(spiffs_conf.partition_label);
+        } else if (data == 0x1112) {
+            gpio_hold_dis(GPIO_OUT);
+            while (1) {
+                gpio_set_level(GPIO_OUT, 0);
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                gpio_set_level(GPIO_OUT, 1);
+                vTaskDelay(pdMS_TO_TICKS(2000));
+            }
+        } else if (data >= 0x1200 && data < 0x1300) {
+            // Read ODD
+            uint16_t index = data;
+            data = 12345;
+            if (index == 0x1200) {
+                data = temp_low;
+            } else if (index >= 0x1210 && index < 0x1215) {
+                data = temps[index-0x1210];
+            } else if (index >= 0x1220 && index < 0x1225) {
+                data = intervals[index-0x1220].from;
+            } else if (index >= 0x1230 && index < 0x1235) {
+                data = intervals[index-0x1230].to;
+            }
+            len = send(sock, &data, 4, 0);
+            if (len <= 0) {
+                ESP_LOGE(TAG, "Failed to write: errno %d", errno);
+                return;
+            }
+        } else if (data >= 0x1300 && data < 0x2000) {
+            // Write ODD
+            uint16_t index = data;
+            data = 12345;
+            len = recv(sock, &data, 4, 0);
+            if (len <= 0) {
+                ESP_LOGE(TAG, "Failed to write: errno %d", errno);
+                return;
+            }
+            if (index == 0x1300) {
+                temp_low = data;
+            } else if (index >= 0x1310 && index < 0x1315) {
+                temps[index-0x1310] = data;
+            } else if (index >= 0x1320 && index < 0x1325) {
+                intervals[index-0x1320].from = data;
+            } else if (index >= 0x1330 && index < 0x1335) {
+                intervals[index-0x1330].to = data;
+            }
         } else if (data == 0x2222) {
+            init_spiffs();
             ESP_LOGI(TAG, "Reading file");
             FILE* f = fopen("/spiffs/foo.txt", "r");
             if (f == NULL) {
@@ -116,7 +229,7 @@ void try_to_connect()
             int c1, c2;
             c1 = fgetc(f);
             c2 = fgetc(f);
-            while (c1 > 0 && c2 > 0) {
+            while (c1 >= 0 && c2 >= 0) {
                 printf("%02x %02x", c1, c2);
                 data[0] = c1;
                 data[1] = c2;
@@ -135,6 +248,8 @@ void try_to_connect()
             }
             printf("\n");
             fclose(f);
+            esp_vfs_spiffs_unregister(spiffs_conf.partition_label);
+
         } else {
             struct tm referenceTime = {0};
             referenceTime.tm_year = 2024 - 1900;
@@ -164,7 +279,7 @@ void try_to_connect()
 }
 
 
-void try_wifi()
+static void try_wifi()
 {
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -194,7 +309,7 @@ void try_wifi()
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
     ESP_ERROR_CHECK(esp_wifi_start() );
     ESP_LOGI(TAG, "wifi_init_sta finished.");
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,1,pdTRUE,pdTRUE, pdMS_TO_TICKS(10000));
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,1,pdTRUE,pdTRUE, pdMS_TO_TICKS(60000));
     if (bits & 1) {
         ESP_LOGI(TAG, "connected!");
         try_to_connect();
@@ -203,8 +318,32 @@ void try_wifi()
 
 }
 
-#define GPIO_OUT 33
-RTC_DATA_ATTR static int boot_count = 0;
+
+uint16_t get_temp()
+{
+    uint8_t data[2];
+    uint16_t temperature = 0xFFFF;
+    esp_err_t err = i2c_master_read_from_device(I2C_MASTER_NUM, 0x4f, data, 2, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read!");
+    }
+    temperature = data[1] + 256 * data[0];
+    temperature = temperature >> 5;
+    ESP_LOGI(TAG, "temp = %f", temperature/8.0);
+    return temperature;
+}
+
+void blink_task()
+{
+    gpio_hold_dis(LED_OUT);
+    while (1) {
+        gpio_set_level(LED_OUT, 0);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        gpio_set_level(LED_OUT, 1);
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    vTaskDelete(NULL);
+}
 
 void app_main(void)
 {
@@ -212,123 +351,13 @@ void app_main(void)
     gpio_config_t io_conf = {
             .intr_type = GPIO_INTR_DISABLE,
             .mode = GPIO_MODE_OUTPUT,
-            .pin_bit_mask = BIT64(GPIO_OUT),
+            .pin_bit_mask = BIT64(GPIO_OUT) | BIT64(LED_OUT),
     };
     gpio_config(&io_conf);
-
-    for(;;) {
-//    for (int i=0; i<5; ++i) {
-        ESP_LOGI(TAG, "Set to 1!");
-        gpio_set_level(GPIO_OUT, 1);
-        vTaskDelay(pdMS_TO_TICKS(10000));
-        ESP_LOGI(TAG, "Set to 0!");
-        gpio_set_level(GPIO_OUT, 0);
-        vTaskDelay(pdMS_TO_TICKS(10000));
-    }
+    gpio_hold_dis(LED_OUT);
+    gpio_set_level(LED_OUT, 0);
+    gpio_hold_en(LED_OUT);
     gpio_deep_sleep_hold_en();
-//    boot_count = 1;
-    gpio_hold_dis(GPIO_OUT);
-    gpio_set_level(GPIO_OUT, boot_count%2);
-    gpio_hold_en(GPIO_OUT);
-    ESP_LOGI(TAG, "Set to %d!", boot_count%2);
-//    vTaskDelay(pdMS_TO_TICKS(10000));
-    gpio_deep_sleep_hold_en();
-    ESP_LOGI(TAG, "Boot count: %d", boot_count);
-    const int deep_sleep_sec = 60;
-    ESP_LOGI(TAG, "Entering deep sleep for %d seconds", deep_sleep_sec);
-    gpio_deep_sleep_hold_en();
-    esp_deep_sleep(1000000LL * deep_sleep_sec);
-
-
-    ESP_LOGI(TAG, "Initializing SPIFFS");
-
-    esp_vfs_spiffs_conf_t conf = {
-      .base_path = "/spiffs",
-      .partition_label = NULL,
-      .max_files = 5,
-      .format_if_mount_failed = true
-    };
-
-
-    // Use settings defined above to initialize and mount SPIFFS filesystem.
-    // Note: esp_vfs_spiffs_register is an all-in-one convenience function.
-    esp_err_t ret = esp_vfs_spiffs_register(&conf);
-
-    if (ret != ESP_OK) {
-        if (ret == ESP_FAIL) {
-            ESP_LOGE(TAG, "Failed to mount or format filesystem");
-        } else if (ret == ESP_ERR_NOT_FOUND) {
-            ESP_LOGE(TAG, "Failed to find SPIFFS partition");
-        } else {
-            ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
-        }
-        return;
-    }
-
-#ifdef CONFIG_EXAMPLE_SPIFFS_CHECK_ON_START
-//    ESP_LOGI(TAG, "Performing SPIFFS_check().");
-//    ret = esp_spiffs_check(conf.partition_label);
-//    if (ret != ESP_OK) {
-//        ESP_LOGE(TAG, "SPIFFS_check() failed (%s)", esp_err_to_name(ret));
-//        return;
-//    } else {
-//        ESP_LOGI(TAG, "SPIFFS_check() successful");
-//    }
-#endif
-
-    size_t total = 0, used = 0;
-    ret = esp_spiffs_info(conf.partition_label, &total, &used);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s). Formatting...", esp_err_to_name(ret));
-        esp_spiffs_format(conf.partition_label);
-        return;
-    } else {
-        ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
-    }
-
-    // Check consistency of reported partiton size info.
-    if (used > total) {
-        ESP_LOGW(TAG, "Number of used bytes cannot be larger than total. Performing SPIFFS_check().");
-        ret = esp_spiffs_check(conf.partition_label);
-        // Could be also used to mend broken files, to clean unreferenced pages, etc.
-        // More info at https://github.com/pellepl/spiffs/wiki/FAQ#powerlosses-contd-when-should-i-run-spiffs_check
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "SPIFFS_check() failed (%s)", esp_err_to_name(ret));
-            return;
-        } else {
-            ESP_LOGI(TAG, "SPIFFS_check() successful");
-        }
-    }
-
-    FILE *f;
-#if 0
-    ESP_LOGI(TAG, "Opening file");
-    f = fopen("/spiffs/foo.txt", "a");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file for writing");
-        return;
-    }
-//    fprintf(f,"AHOJ\n");
-//    fflush(f);
-    fputc(0x55, f);
-    fputc(0xAA, f);
-    fclose(f);
-    ESP_LOGI(TAG, "File written");
-    ESP_LOGI(TAG, "Reading file");
-    f = fopen("/spiffs/foo.txt", "r");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file for reading");
-        return;
-    }
-    int c;
-    while ((c=fgetc(f))  > 0) {
-        printf("%x\n", c);
-    }
-    printf("\n");
-    fclose(f);
-    ESP_LOGI(TAG, "Entering deep sleep for %d seconds", 10);
-    esp_deep_sleep(1000000LL * 10);
-#endif
 
 
     time_t now;
@@ -337,139 +366,84 @@ void app_main(void)
     localtime_r(&now, &timeinfo);
     // Is time set? If not, tm_year will be (1970 - 1900).
 
-//    if (timeinfo.tm_year < (2016 - 1900)) {
-//        ESP_LOGI(TAG, "Time is not set yet. Connecting to WiFi and getting time over NTP.");
-//        try_wifi();
-//        ESP_LOGI(TAG, "Entering deep sleep for %d seconds", 10);
-//        esp_deep_sleep(1000000LL * 10);
-//    }
+    if (timeinfo.tm_year < (2016 - 1900)) {
+        status = 0;
+        gpio_hold_dis(GPIO_OUT);
+        gpio_set_level(GPIO_OUT, 0);
+        gpio_hold_en(GPIO_OUT);
+        gpio_deep_sleep_hold_en();
+        ESP_LOGI(TAG, "Time is not set yet. Connecting to WiFi and getting time over NTP.");
+        xTaskCreate(blink_task, "blink", 1024, NULL, 5, NULL);
+        try_wifi();
+        status = 0;
+        esp_deep_sleep(1000000LL); // sleep for one second
+//        vTaskCreate
+    }
+    // now we know that the time is set!
+    int hours = timeinfo.tm_hour*100 + timeinfo.tm_min;
+    ESP_LOGE(TAG, "Hours: %d", timeinfo.tm_hour*100 + timeinfo.tm_min);
 
 
-    // Use POSIX and C standard library functions to work with files.
-    // First create a file.
-//    uint16_t temp = 0x1234;
-//    ESP_LOGI(TAG, "Opening file");
-    ESP_LOGI(TAG, "temp = %X", temp);
-    if (temp != 0) {
-        ESP_LOGE(TAG, "temp = %X", temp);
+    ESP_ERROR_CHECK(i2c_master_init());
+    uint16_t t1 = get_temp();
+    uint16_t t2 = get_temp();
+    while (abs(t1 -t2) > 8) {
+        t1 = t2;
+        t2 = get_temp();
+    }
+    uint16_t temperature = t1 + t2;
+    if (temperature < 5*16 || temperature > 70*16) {
+        temperature = 0;
+        esp_deep_sleep(1000000LL * 10);
+    }
 
+    temp[boot_count] = temperature;
+
+    uint16_t temp_threshold = temp_low;
+    for (int i=0; i<4; ++i) {
+        if (hours > intervals[i].from && hours < intervals[i].to) {
+            temp_threshold = temps[i];
+            ESP_LOGI(TAG, "Found mode %d", i);;
+            break;
+        }
+    }
+    ESP_LOGI(TAG, "Using temp threshold %d", temp_threshold);
+    if (temperature < temp_threshold*16 && status == 0)  {
+        status = 1;
+        ESP_LOGI(TAG, "Switching ON: %f < %f", temperature/16.0, 1.0*temp_threshold);
+        gpio_hold_dis(GPIO_OUT);
+        gpio_set_level(GPIO_OUT, 1);
+        gpio_hold_en(GPIO_OUT);
+        gpio_deep_sleep_hold_en();
+    } else if (temperature > (temp_threshold + 1)*16 && status == 1) {
+        status = 0;
+        ESP_LOGI(TAG, "Switching OFF: %f ~> %f", temperature/16.0, 1.0*temp_threshold);
+        gpio_hold_dis(GPIO_OUT);
+        gpio_set_level(GPIO_OUT, 0);
+        gpio_hold_en(GPIO_OUT);
+        gpio_deep_sleep_hold_en();
+    }
+
+    temp[boot_count] |= status ? 0x8000: 0;
+    boot_count++;
+    if (boot_count >= 10) {
+        boot_count = 0;
+        init_spiffs();
+        FILE *f;
         f = fopen("/spiffs/foo.txt", "a");
         if (f == NULL) {
             ESP_LOGE(TAG, "Failed to open file for writing");
             return;
         }
-        int c1 = 0xFF & temp;
-        int c2 = 0xFF & (temp >> 8);
-
-        fputc(1+c1, f);
-        fputc(1+c2, f);
-        ESP_LOGE(TAG, "c1 = %X", c1);
-        ESP_LOGE(TAG, "c2 = %X", c2);
-//
-//        fputc(0xFF & temp, f);
-//        fputc(0xFF & (temp >> 8), f);
+        for (int i=0; i<10; ++i) {
+            fputc(temp[i]&0xFF, f);
+            fputc((temp[i]>>8)&0xFF, f);
+        }
         fclose(f);
-    } else {
-        unlink("/spiffs/foo.txt");
-        FILE* f = fopen("/spiffs/foo.txt", "a");
-        fputc(0x11, f);
-        fputc(0, f);
-        fclose(f);
-
+        esp_vfs_spiffs_unregister(spiffs_conf.partition_label);
+        ESP_LOGI(TAG, "SPIFFS unmounted");
     }
-
-    f = fopen("/spiffs/foo.txt", "r");
-    int c;
-    while ((c=fgetc(f))  >= 0) {
-        printf("%x\n", c);
-    }
-    printf("\n");
-    fclose(f);
-
-//    fprintf(f,"%c%c\n\n", temp, temp>>8);
-#if 0
-    fputc(1+(0xFF & temp), f);
-    fputc(1+(0xFF & (temp >> 8)), f);
-    fflush(f);
-    fclose(f);
-    f = fopen("/spiffs/foo.txt", "r");
-    int c;
-    while ((c=fgetc(f))  > 0) {
-        printf("%x\n", c);
-    }
-    printf("\n");
-    fclose(f);
-#endif
-
-    uint8_t data[2];
-    ESP_ERROR_CHECK(i2c_master_init());
-    ESP_LOGI(TAG, "I2C initialized successfully");
-    i2c_master_read_from_device(I2C_MASTER_NUM, 0x4f, data, 2, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-    temp = data[1] + 256 * data[0];
-    ESP_LOGI(TAG, "temp = %X", temp);
-    temp = temp >> 5;
-    ESP_LOGI(TAG, "temp = %f", temp/8.0);
-
-//    ESP_LOGI(TAG, "Opening file");
-//    f = fopen("/spiffs/foo.txt", "a");
-//    if (f == NULL) {
-//        ESP_LOGE(TAG, "Failed to open file for writing");
-//        return;
-//    }
-//    fprintf(f,"%c%c\n\n", temp, temp>>8);
-//    fputc(0xFF & temp, f);
-//    fputc(0xFF & (temp >> 8), f);
-//    fflush(f);
-//    fclose(f);
-//    f = fopen("/spiffs/foo.txt", "r");
-//    fclose(f);
-    esp_vfs_spiffs_unregister(conf.partition_label);
-    ESP_LOGI(TAG, "SPIFFS unmounted");
-
-    ESP_LOGI(TAG, "File written");
-    ESP_LOGI(TAG, "Entering deep sleep for %d seconds", 10);
+    ESP_LOGI(TAG, "Entering deep sleep for %d seconds", 1);
     gpio_deep_sleep_hold_en();
-    esp_deep_sleep(1000000LL * 1);
-
-//    // Check if destination file exists before renaming
-//    struct stat st;
-//    if (stat("/spiffs/foo.txt", &st) == 0) {
-//        // Delete it if it exists
-//        unlink("/spiffs/foo.txt");
-//    }
-//
-//    // Rename original file
-//    ESP_LOGI(TAG, "Renaming file");
-//    if (rename("/spiffs/hello.txt", "/spiffs/foo.txt") != 0) {
-//        ESP_LOGE(TAG, "Rename failed");
-//        return;
-//    }
-
-//    // Open renamed file for reading
-//    ESP_LOGI(TAG, "Reading file");
-//    f = fopen("/spiffs/foo.txt", "r");
-//    if (f == NULL) {
-//        ESP_LOGE(TAG, "Failed to open file for reading");
-//        return;
-//    }
-//    while ((c=fgetc(f))  > 0) {
-//        printf("%c", c);
-//    }
-//    printf("\n");
-//    while (!feof(f)) {
-//        fgets(line, sizeof(line), f);
-//        ESP_LOGI(TAG, "Read from file: '%s'", line);
-//    }
-//    fgets(line, sizeof(line), f);
-    fclose(f);
-    // strip newline
-//    char* pos = strchr(line, '\n');
-//    if (pos) {
-//        *pos = '\0';
-//    }
-//    ESP_LOGI(TAG, "Read from file: '%s'", line);
-
-    // All done, unmount partition and disable SPIFFS
-    esp_vfs_spiffs_unregister(conf.partition_label);
-    ESP_LOGI(TAG, "SPIFFS unmounted");
+    esp_deep_sleep(1000000LL * 60);
 }

@@ -5,6 +5,8 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <stdlib.h>
+
 #include <string.h>
 #define PORT 3333
 
@@ -61,6 +63,7 @@ int main(int c, char** var) {
     // Calculate the difference in seconds
     time_t secondsSince2024 = difftime(currentTime, mktime(&targetTime));
 
+//    secondsSince2024 -= 22*60;
     // Print the result
     printf("Number of seconds since January 1, 2024: %d\n", (int)secondsSince2024);
     uint32_t data = secondsSince2024;
@@ -70,10 +73,39 @@ int main(int c, char** var) {
             data = 0x1111;
         } else if (strcmp(var[1],"read") == 0) {
             data = 0x2222;
+        } else if (strcmp(var[1],"test") == 0) {
+            data = 0x1112;
+        } else if (strcmp(var[1],"od_get") == 0) {
+            char *endptr;
+            data = strtoul(var[2], &endptr, 16);
+        } else if (strcmp(var[1],"od_set") == 0) {
+            char *endptr;
+            uint32_t index = strtoul(var[2], &endptr, 16);
+            data = strtoul(var[3], &endptr, 10);
+            int len = send(sock, &index, 4, 0);
+            if (len <= 0) {
+                printf("we're done\n");
+                return 1;
+            }
+            len = send(sock, &data, 4, 0);
+            if (len <= 0) {
+                printf("we're done\n");
+                return 1;
+            }
         }
     }
 
     int len = send(sock, &data, 4, 0);
+
+    if (strcmp(var[1],"od_get") == 0) {
+        uint32_t temp = 0;
+        len = recv(sock, &temp, 4, 0);
+        if (len <= 0) {
+            printf("we're done\n");
+            return 1;
+        }
+        printf("%d\n", (int)temp);
+    }
 
     if (data == 0x2222) {
         uint16_t temp = 0;
@@ -83,7 +115,11 @@ int main(int c, char** var) {
                 printf("we're done\n");
                 return 1;
             }
-            printf(">%04x\n", temp);
+            if (temp != 0xFFFF) {
+                printf("%0f\n", temp/8.0);
+
+            }
+//            printf(">%04x\n", temp);
         }
     }
     // close(sock);
