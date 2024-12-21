@@ -116,7 +116,8 @@ int main(int c, char** var) {
                 return 1;
             }
             if (temp != 0xFFFF) {
-                printf("%0f\n", temp/8.0);
+                printf("%d,", 0x8000&temp?1:0);
+                printf("%0f\n", (0x7FFF&temp)/8.0);
 
             }
 //            printf(">%04x\n", temp);

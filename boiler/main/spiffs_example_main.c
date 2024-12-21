@@ -37,12 +37,20 @@ typedef struct interval {
 #define EVENING  2
 #define NIGHT    3
 
+//#define SUMMER_TIME 0
+#define SUMMER_TIME 1
+
 RTC_DATA_ATTR static uint16_t temp_low = 28;
-RTC_DATA_ATTR static uint16_t temps[] = { 20, 30, 35, 40 };
-RTC_DATA_ATTR static interval_t intervals[] =  {  { 700, 1800 },
-                                                  { 1530, 1600},
-                                                  { 2100, 2230},
-                                                  { 400, 500} };
+RTC_DATA_ATTR static uint16_t temps[] = { 35, 30, 20, 30 };
+//RTC_DATA_ATTR static uint16_t temps[] = { 20, 30, 35, 40 };
+//RTC_DATA_ATTR static interval_t intervals[] =  {  { 700, 1800 },
+//                                                  { 1530, 1600},
+//                                                  { 2100, 2230},
+//                                                  { 400, 500} };
+RTC_DATA_ATTR static interval_t intervals[] =  {  { 430, 530 },
+                                                  { 1400, 1600},
+                                                  { 600, 1800},
+                                                  { 1900, 2000} };
 
 static const char *TAG = "example";
 static EventGroupHandle_t s_wifi_event_group;
@@ -177,9 +185,9 @@ void try_to_connect()
             gpio_hold_dis(GPIO_OUT);
             while (1) {
                 gpio_set_level(GPIO_OUT, 0);
-                vTaskDelay(pdMS_TO_TICKS(2000));
+                vTaskDelay(pdMS_TO_TICKS(5000));
                 gpio_set_level(GPIO_OUT, 1);
-                vTaskDelay(pdMS_TO_TICKS(2000));
+                vTaskDelay(pdMS_TO_TICKS(10000));
             }
         } else if (data >= 0x1200 && data < 0x1300) {
             // Read ODD
@@ -255,7 +263,7 @@ void try_to_connect()
             referenceTime.tm_year = 2024 - 1900;
             referenceTime.tm_mon = 0;   // January
             referenceTime.tm_mday = 1;  // 1st day
-            referenceTime.tm_hour = 0;  // 00 hours
+            referenceTime.tm_hour = SUMMER_TIME;  // 00 hours
             referenceTime.tm_min = 0;   // 00 minutes
             referenceTime.tm_sec = 0;   // 00 seconds
             long long secondsSinceReference = data;
