@@ -68,7 +68,7 @@ echo "Super-secret-password" | gpg --compress-level 0 --encrypt --recipient 069E
 ## Get the encrypted session key
 
 ```bash
-cargo run --bin extract-seip-content password.pgp
+python extract_seip_content.py password.pgp
 ```
 this parses openpgp packets and creates two files (encrypted binaries)
 * `pkesk.bin` (asymmetrically encrypted session key)
@@ -102,7 +102,7 @@ export the session key
 ```bash
 export KEY=FA2672FD63269AAB746E7DD8B5F3CE1E984D00A25DED0FEFC304189D2410AF85
 ```
-and use the openssl command printed from `cargo run --bin extract-seip-content password.pgp`
+and use the openssl command printed from `python extract_seip_content.py password.pgp`
 
 ```bash
 ~$ openssl enc -aes-256-cfb -d -K $KEY -iv D9218797E27FAD1931CFD8EB9E74EEE5 -in encrypted.bin

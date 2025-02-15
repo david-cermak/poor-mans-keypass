@@ -74,7 +74,7 @@ def main():
             # Skip version (1 byte) and key ID (8 bytes)
             esk_data = packet_data[9:]
             with open("pkesk.bin", "wb") as f:
-                f.write(esk_data)
+                f.write(esk_data[3:])
         # SEIP packet (tag 18)
       # SEIP packet (tag 18)
         elif tag == 18:
