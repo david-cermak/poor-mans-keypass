@@ -9,7 +9,8 @@
 #include <unistd.h>
 #include "esp_log.h"
 #include "mbedtls_wrap.hpp"
-//#include "test_certs.hpp"
+#include "driver/uart.h"
+#include "esp_check.h"
 
 namespace test_certs {
 using pem_format = const unsigned char;
@@ -47,93 +48,69 @@ static inline const char *get_server_cn()
 }
 
 namespace {
-constexpr auto *TAG = "tcp_example";
+constexpr auto *TAG = "tls_server_over_uart";
 }
 
 using namespace idf::mbedtls_cxx;
 using namespace test_certs;
 
-class SecureLink : public Tls {
+class SecureLink: public Tls {
 public:
-    explicit SecureLink() : Tls(), addr("localhost", 3333, AF_INET, SOCK_STREAM) {}
-    ~SecureLink() override
-    {
-        if (client_sock >= 0) {
-            ::close(client_sock);
-        }
-        if (sock >= 0) {
-            ::close(sock);
-        }
-    }
+    explicit SecureLink(uart_port_t port, int tx, int rx) : Tls(), uart(port, tx, rx) {}
+    ~SecureLink() = default;
     int send(const unsigned char *buf, size_t len) override
     {
-        return ::send(client_sock, buf, len, 0);
+        printf("sending %d bytes\n", len);
+        vTaskDelay(pdMS_TO_TICKS(100));
+//        ESP_LOG_BUFFER_HEXDUMP("send", buf, len, ESP_LOG_INFO);
+        return uart_write_bytes(uart.port_, buf, len);
     }
+
     int recv(unsigned char *buf, size_t len) override
     {
-        return ::recv(client_sock, buf, len, 0);
+        // stream read
+        int l = uart.recv(buf, len, 100);
+//        vTaskDelay(pdMS_TO_TICKS(100));
+        if (l>0) {
+            printf("received %d bytes\n", l);
+//            ESP_HEXDUMP(TAG, buf, l);
+        }
+        return l;
     }
+
     int recv_timeout(unsigned char *buf, size_t len, int timeout) override
     {
-        struct timeval tv {
-                timeout / 1000, (timeout % 1000 ) * 1000
-        };
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(client_sock, &read_fds);
-
-        int ret = select(client_sock + 1, &read_fds, nullptr, nullptr, timeout == 0 ? nullptr : &tv);
-        if (ret == 0) {
-            return MBEDTLS_ERR_SSL_TIMEOUT;
-        }
-        if (ret < 0) {
-            if (errno == EINTR) {
-                return MBEDTLS_ERR_SSL_WANT_READ;
-            }
-            return ret;
-        }
-        return recv(buf, len);
+        // dgram read
+        return uart.recv_dgram(buf, len, timeout);
     }
+
+    bool listen() // open as server
+    {
+        return open(true);
+    }
+
+    bool connect() // open as client
+    {
+        return open(false);
+    }
+
+private:
     bool open(bool server_not_client)
     {
-        if (!addr) {
-            ESP_LOGE(TAG, "Failed to resolve endpoint");
+        if (uart.init() != ESP_OK) {
             return false;
         }
-        sock = addr.get_sock();
-        if (sock < 0) {
-            ESP_LOGE(TAG, "Failed to create socket");
-            return false;
-        }
-
-        if (server_not_client) {
-            int err = bind(sock, addr, ai_size);
-            if (err < 0) {
-                ESP_LOGE(TAG, "Socket unable to bind: errno %d", errno);
-                return false;
-            }
-
-            if (listen(sock, 1) < 0) {
-                ESP_LOGE(TAG, "Socket listen failed: errno %d", errno);
-                return false;
-            }
-
-            ESP_LOGI(TAG, "Waiting for a client connection...");
-            struct sockaddr_in client_addr;
-            socklen_t client_len = sizeof(client_addr);
-            client_sock = accept(sock, (struct sockaddr *)&client_addr, &client_len);
-            if (client_sock < 0) {
-                ESP_LOGE(TAG, "Socket accept failed: errno %d", errno);
-                return false;
-            }
-
-            ESP_LOGI(TAG, "Client connected.");
-        }
-
+//        while (!uart.debounce(server_not_client)) {
+//            printf("debouncing...\n");
+//            usleep(10000);
+//        }
         TlsConfig config{};
-        config.is_dtls = false;  // No DTLS for TCP
+        config.is_dtls = false;
         config.timeout = 10000;
-
+        if (server_not_client) {
+            const unsigned char client_id[] = "Client1";
+            config.client_id = std::make_pair(client_id, sizeof(client_id));
+        }
         if (!init(is_server{server_not_client}, do_verify{true}, &config)) {
             return false;
         }
@@ -141,54 +118,115 @@ public:
         return handshake() == 0;
     }
 
-private:
-    int sock{-1};
-    int client_sock{-1};
+    /**
+     * RAII wrapper of UART
+     */
+    struct uart_info {
+        uart_port_t port_;
+        QueueHandle_t queue_{};
+        int tx_, rx_;
 
-    struct addr_info {
-        struct addrinfo *ai = nullptr;
-        explicit addr_info(const char *host, int port, int family, int type)
+        // used for datagrams
+        bool header_{true};
+        int in_payload_{0};
+        int payload_len_{0};
+        uint8_t payload_[1600] {};
+
+        explicit uart_info(uart_port_t port, int tx, int rx): port_(port), tx_(tx), rx_(rx)
         {
-            struct addrinfo hints {};
-            hints.ai_family = family;
-            hints.ai_socktype = type;
-            hints.ai_protocol = IPPROTO_TCP;
-            if (getaddrinfo(host, nullptr, &hints, &ai) < 0) {
-                freeaddrinfo(ai);
-                ai = nullptr;
+        }
+        esp_err_t init()
+        {
+            uart_config_t uart_config = {};
+            uart_config.baud_rate = 115200;
+            uart_config.data_bits = UART_DATA_8_BITS;
+            uart_config.parity    = UART_PARITY_DISABLE;
+            uart_config.stop_bits = UART_STOP_BITS_1;
+            uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+            uart_config.source_clk = UART_SCLK_DEFAULT;
+            ESP_RETURN_ON_ERROR(uart_driver_install(port_, 4096, 0, 1, &queue_, 0), TAG, "Failed to install UART");
+            ESP_RETURN_ON_ERROR(uart_param_config(port_, &uart_config), TAG, "Failed to set params");
+            ESP_RETURN_ON_ERROR(uart_set_pin(port_, tx_, rx_, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE), TAG, "Failed to set UART pins");
+            ESP_RETURN_ON_ERROR(uart_set_rx_timeout(port_, 10), TAG, "Failed to set UART Rx timeout");
+            return ESP_OK;
+        }
+        ~uart_info()
+        {
+            uart_driver_delete(port_);
+        }
+        bool debounce(bool server)
+        {
+            uint8_t data = 0;
+            if (server) {
+                while (uart_read_bytes(port_, &data, 1, 0) != 0) {
+                    if (data == 0x55) {
+                        uart_write_bytes(port_, &data, 1);
+                        return true;
+                    }
+                }
+                return false;
             }
-            auto *p = (struct sockaddr_in *)ai->ai_addr;
-            p->sin_port = htons(port);
-        }
-        ~addr_info()
-        {
-            freeaddrinfo(ai);
-        }
-        explicit operator bool() const
-        {
-            return ai != nullptr;
-        }
-        operator sockaddr *() const
-        {
-            auto *p = (struct sockaddr_in *)ai->ai_addr;
-            return (struct sockaddr *)p;
+            data = 0x55;
+            uart_write_bytes(port_, &data, 1);
+            data = 0;
+            uart_read_bytes(port_, &data, 1, pdMS_TO_TICKS(1000));
+            if (data != 0x55) {
+                uart_flush_input(port_);
+                return false;
+            }
+            return true;
         }
 
-        int get_sock() const
+        int recv(unsigned char *buf, size_t size, int timeout) // this is for stream transport
         {
-            return socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+            int len = uart_read_bytes(port_, buf, size, pdMS_TO_TICKS(timeout));
+            if (len == 0) {
+                return MBEDTLS_ERR_SSL_WANT_READ;
+            }
+            return len;
         }
-    } addr;
-    const int ai_size{sizeof(struct sockaddr_in)};
+
+        int recv_dgram(unsigned char *buf, size_t size, int timeout) // this is for datagrams
+        {
+            uart_event_t event = {};
+            size_t length;
+            uart_get_buffered_data_len(port_, &length);
+            if (length == 0) {
+                xQueueReceive(queue_, &event, pdMS_TO_TICKS(timeout));
+            }
+            uart_get_buffered_data_len(port_, &length);
+            if (length == 0) {
+                return MBEDTLS_ERR_SSL_WANT_READ;
+            }
+            if (header_) {
+                if (length >= 2) {
+                    uart_read_bytes(port_, &payload_len_, 2, 0);
+                    header_ = false;
+                    length -= 2;
+                }
+            }
+            if (!header_ && length > 0) {
+                int to_read = payload_len_ - in_payload_;
+                int l = uart_read_bytes(port_, &payload_[in_payload_], to_read, 0);
+                in_payload_ += l;
+                if (payload_len_ == in_payload_) {
+                    header_ = true;
+                    memcpy(buf, payload_, payload_len_);
+                    in_payload_ = 0;
+                    return payload_len_;
+                }
+            }
+            return MBEDTLS_ERR_SSL_WANT_READ;
+        }
+    } uart;
 };
-
 
 namespace {
 
 void tls_server()
 {
-    unsigned char message[128];
-    SecureLink server;
+    unsigned char message[128]; // = "Hello, world!";
+    SecureLink server(UART_NUM_1, 4, 5);
     if (!server.set_own_cert(get_buf(type::servercert), get_buf(type::serverkey))) {
         ESP_LOGE(TAG, "Failed to set own cert");
         return;
@@ -198,11 +236,15 @@ void tls_server()
         return;
     }
     ESP_LOGI(TAG, "opening...");
-    if (!server.open(true)) {
+    if (!server.listen()) {
 
         ESP_LOGE(TAG, "Failed to OPEN! %d", errno);
         return;
     }
+//    int len = 15;
+//    server.write((uint8_t*)"\n", 1);
+    ESP_LOGI(TAG, "Connection is opened");
+    vTaskDelay(pdMS_TO_TICKS(1000));
     int len = server.read(message, sizeof(message));
     if (len < 0) {
         ESP_LOGE(TAG, "Failed to read!");
