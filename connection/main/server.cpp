@@ -60,9 +60,7 @@ public:
     ~SecureLink() = default;
     int send(const unsigned char *buf, size_t len) override
     {
-        printf("sending %d bytes\n", len);
-        vTaskDelay(pdMS_TO_TICKS(100));
-//        ESP_LOG_BUFFER_HEXDUMP("send", buf, len, ESP_LOG_INFO);
+//        printf("sending %d bytes\n", len);
         return uart_write_bytes(uart.port_, buf, len);
     }
 
@@ -70,10 +68,8 @@ public:
     {
         // stream read
         int l = uart.recv(buf, len, 100);
-//        vTaskDelay(pdMS_TO_TICKS(100));
         if (l>0) {
-            printf("received %d bytes\n", l);
-//            ESP_HEXDUMP(TAG, buf, l);
+//            printf("received %d bytes\n", l);
         }
         return l;
     }
@@ -241,10 +237,7 @@ void tls_server()
         ESP_LOGE(TAG, "Failed to OPEN! %d", errno);
         return;
     }
-//    int len = 15;
-//    server.write((uint8_t*)"\n", 1);
     ESP_LOGI(TAG, "Connection is opened");
-    vTaskDelay(pdMS_TO_TICKS(1000));
     int len = server.read(message, sizeof(message));
     if (len < 0) {
         ESP_LOGE(TAG, "Failed to read!");
@@ -256,6 +249,7 @@ void tls_server()
         return;
     }
     ESP_LOGI(TAG, "Written back");
+    vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 void udp_auth()
